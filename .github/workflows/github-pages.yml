@@ -3,6 +3,8 @@ name: GitHub Pages デプロイ
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -22,41 +24,174 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.21'
+          
+      - name: Show Go version
+        run: |
+          echo "📌 Goバージョン確認"
+          go version
+          echo "GOROOT: $(go env GOROOT)"
+          echo "GOPATH: $(go env GOPATH)"
 
       - name: Install dependencies
-        run: go mod download
+        run: |
+          echo "📦 依存関係をインストール"
+          go mod download
+          go mod verify
+          echo "✅ 依存関係のインストール完了"
+
+      - name: Create docs directory
+        run: |
+          echo "📁 docsディレクトリを作成"
+          mkdir -p docs
+          ls -la
 
       - name: Build WebAssembly
         run: |
+          echo "🔨 WebAssemblyビルドを開始"
           export GOOS=js
           export GOARCH=wasm
+          
+          # ビルド前にファイルの存在を確認
+          if [ ! -f "miko_game_with_worshippers.go" ]; then
+            echo "❌ エラー: miko_game_with_worshippers.go が見つかりません"
+            ls -la *.go
+            exit 1
+          fi
+          
+          echo "📊 ビルド対象: miko_game_with_worshippers.go"
+          
+          # ビルド実行
           go build -ldflags="-s -w" -o docs/game.wasm miko_game_with_worshippers.go
+          
+          # ビルド結果確認
+          if [ ! -f "docs/game.wasm" ]; then
+            echo "❌ エラー: game.wasmの生成に失敗しました"
+            exit 1
+          fi
+          
+          echo "✅ WebAssemblyビルド完了"
+          echo "📏 ファイルサイズ: $(ls -lh docs/game.wasm | awk '{print $5}')"
 
       - name: Copy Go WASM runtime
         run: |
-          # Go標準のwasm_exec.jsを取得
-          echo "✅ 標準パスからwasm_exec.jsを取得"
-          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" docs/
+          echo "📋 wasm_exec.jsをコピー"
           
-          # ファイルが正常に取得できたか確認
-          if [ ! -f "docs/wasm_exec.js" ]; then
-            echo "❌ wasm_exec.jsの取得に失敗"
+          # Go環境のwasm_exec.jsを検索
+          WASM_EXEC_PATH="$(go env GOROOT)/misc/wasm/wasm_exec.js"
+          
+          # 新しいパスも試す
+          if [ ! -f "$WASM_EXEC_PATH" ]; then
+            WASM_EXEC_PATH="$(go env GOROOT)/lib/wasm/wasm_exec.js"
+          fi
+          
+          if [ ! -f "$WASM_EXEC_PATH" ]; then
+            echo "❌ エラー: wasm_exec.jsが見つかりません"
+            echo "検索パス試行: "
+            echo "  - $(go env GOROOT)/misc/wasm/wasm_exec.js"
+            echo "  - $(go env GOROOT)/lib/wasm/wasm_exec.js"
+            # 代替パスを試す
+            echo "検索中..."
+            find $(go env GOROOT) -name "wasm_exec.js" -type f 2>/dev/null || true
             exit 1
           fi
-        
-          echo "✅ wasm_exec.js取得完了 ($(wc -c < docs/wasm_exec.js) bytes)"
           
-      - name: Copy assets
+          cp "$WASM_EXEC_PATH" docs/
+          
+          if [ ! -f "docs/wasm_exec.js" ]; then
+            echo "❌ エラー: wasm_exec.jsのコピーに失敗しました"
+            exit 1
+          fi
+          
+          echo "✅ wasm_exec.jsコピー完了"
+          echo "📏 ファイルサイズ: $(ls -lh docs/wasm_exec.js | awk '{print $5}')"
+
+      - name: Copy HTML and assets
         run: |
+          echo "📄 HTMLファイルとアセットをコピー"
+          
+          # index.htmlが存在しない場合は基本的なものを作成
+          if [ ! -f "docs/index.html" ]; then
+            echo "⚠️ index.htmlが存在しません。基本的なHTMLを作成します。"
+            cat > docs/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>江戸前エルフ</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #222;
+        }
+        #loading {
+            color: white;
+            font-family: sans-serif;
+            font-size: 1.5em;
+        }
+        canvas {
+            border: 1px solid #444;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">読み込み中...</div>
+    <script src="wasm_exec.js"></script>
+    <script>
+        if (!WebAssembly.instantiateStreaming) {
+            WebAssembly.instantiateStreaming = async (resp, importObject) => {
+                const source = await (await resp).arrayBuffer();
+                return await WebAssembly.instantiate(source, importObject);
+            };
+        }
+        
+        const go = new Go();
+        WebAssembly.instantiateStreaming(fetch("game.wasm"), go.importObject).then((result) => {
+            go.run(result.instance);
+            document.getElementById('loading').style.display = 'none';
+        }).catch((err) => {
+            console.error(err);
+            document.getElementById('loading').textContent = 'エラー: ' + err.message;
+        });
+    </script>
+</body>
+</html>
+EOF
+          else
+            echo "✅ 既存のindex.htmlを使用"
+          fi
+          
+          # アセットディレクトリをコピー
           if [ -d "assets" ]; then
             cp -r assets docs/
+            echo "✅ assetsディレクトリをコピー"
+          else
+            echo "⚠️ assetsディレクトリが存在しません"
           fi
+          
+          # その他の必要なファイルをコピー
+          [ -f "_config.yml" ] && cp _config.yml docs/
+          [ -f "_headers" ] && cp _headers docs/
 
       - name: Create .nojekyll
-        run: touch docs/.nojekyll
+        run: |
+          touch docs/.nojekyll
+          echo "✅ .nojekyllファイルを作成"
+
+      - name: List build artifacts
+        run: |
+          echo "📦 ビルド成果物:"
+          ls -la docs/
+          echo ""
+          echo "📊 ディスク使用量:"
+          du -sh docs/*
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -67,6 +202,7 @@ jobs:
           path: ./docs
 
   deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
