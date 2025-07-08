@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EdomaeElf - 巫女さんの神社探索（参拝客システム）</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        
+        .game-container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        
+        #gameCanvas {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            display: block;
+        }
+        
+        .controls {
+            max-width: 1024px;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .controls h2 {
+            color: #333;
+            margin-top: 0;
+        }
+        
+        .controls ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        
+        .controls li {
+            margin: 10px 0;
+            padding: 5px 10px;
+            background-color: #f8f8f8;
+            border-radius: 5px;
+        }
+        
+        .controls strong {
+            color: #d2691e;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #666;
+        }
+        
+        .error {
+            color: #c31e1e;
+            background-color: #ffe6e6;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        
+        .feature {
+            background-color: #e8f4f8;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <h1>🏮 EdomaeElf - 巫女さんの神社探索 🏮</h1>
+    <p>参拝客システム付きゲーム - WebGL版</p>
+    
+    <div class="game-container">
+        <canvas id="gameCanvas" width="1024" height="768"></canvas>
+        <div id="loadingMessage" class="loading">
+            <p>🔄 ゲームを読み込み中...</p>
+            <p>初回読み込みは少し時間がかかります。</p>
+        </div>
+        <div id="errorMessage" class="error" style="display: none;"></div>
+    </div>
+    
+    <div class="controls">
+        <h2>📋 操作方法</h2>
+        <ul>
+            <li><strong>WASD または 矢印キー</strong>: プレイヤー移動</li>
+            <li><strong>E</strong>: 編集モード切替</li>
+            <li><strong>編集モード時:</strong>
+                <ul style="margin-left: 20px;">
+                    <li><strong>Q/R</strong>: タイルX選択</li>
+                    <li><strong>T/Y</strong>: タイルY選択</li>
+                    <li><strong>左クリック</strong>: タイル配置</li>
+                    <li><strong>Space</strong>: カメラリセット</li>
+                </ul>
+            </li>
+        </ul>
+        
+        <h2>🎮 ゲーム機能</h2>
+        <div class="feature">
+            <h3>参拝客システム</h3>
+            <ul>
+                <li>ランダムなタイミングで参拝客が画面の左右から出現</li>
+                <li>参拝客は自動的に賽銭箱に向かって移動</li>
+                <li>賽銭箱で2秒間参拝してから画面外に退場</li>
+                <li>参拝客の色がランダムに変化</li>
+                <li>参拝時のバウンスアニメーション</li>
+                <li>退場時のフェードアウト効果</li>
+            </ul>
+        </div>
+    </div>
+    
+    <script src="wasm_exec.js"></script>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const errorMessage = document.getElementById('errorMessage');
+        
+        // WebAssemblyをサポートしているかチェック
+        if (!WebAssembly.instantiateStreaming) {
+            WebAssembly.instantiateStreaming = async (resp, importObject) => {
+                const source = await (await resp).arrayBuffer();
+                return await WebAssembly.instantiate(source, importObject);
+            };
+        }
+        
+        // Goランタイムの初期化
+        const go = new Go();
+        
+        // WebAssemblyファイルを読み込み
+        WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+            .then((result) => {
+                // ゲームを開始
+                go.run(result.instance);
+                
+                // 読み込み完了
+                loadingMessage.style.display = 'none';
+                canvas.style.display = 'block';
+                
+                // キャンバスにフォーカス
+                canvas.focus();
+            })
+            .catch((err) => {
+                console.error('WebAssembly読み込みエラー:', err);
+                loadingMessage.style.display = 'none';
+                errorMessage.style.display = 'block';
+                errorMessage.innerHTML = `
+                    <strong>エラー:</strong> ゲームの読み込みに失敗しました。<br>
+                    詳細: ${err.message}<br>
+                    <small>開発者ツール(F12)のコンソールで詳細を確認してください。</small>
+                `;
+            });
+        
+        // キャンバスクリックでフォーカス
+        canvas.addEventListener('click', () => {
+            canvas.focus();
+        });
+        
+        // タッチデバイス用の設定
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            canvas.focus();
+        });
+    </script>
+</body>
+</html>
