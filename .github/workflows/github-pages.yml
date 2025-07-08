@@ -112,6 +112,14 @@ jobs:
         run: |
           echo "📄 HTMLファイルとアセットをコピー"
           
+          # index.htmlが既にdocs/内にあることを確認
+          if [ -f "docs/index.html" ]; then
+            echo "✅ index.htmlは既にdocs/内に存在します"
+          else
+            echo "❌ エラー: docs/index.htmlが見つかりません"
+            exit 1
+          fi
+          
           # アセットディレクトリをコピー
           if [ -d "assets" ]; then
             cp -r assets docs/
