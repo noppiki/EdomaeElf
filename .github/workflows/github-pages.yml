@@ -128,9 +128,18 @@ jobs:
             echo "⚠️ assetsディレクトリが存在しません"
           fi
           
-          # その他の必要なファイルをコピー
-          [ -f "_config.yml" ] && cp _config.yml docs/
-          [ -f "_headers" ] && cp _headers docs/
+          # その他の必要なファイルを確認（既にdocs/内に存在）
+          if [ -f "docs/_config.yml" ]; then
+            echo "✅ _config.ymlは既にdocs/内に存在します"
+          else
+            echo "⚠️ docs/_config.ymlが存在しません"
+          fi
+          
+          if [ -f "docs/_headers" ]; then
+            echo "✅ _headersは既にdocs/内に存在します"
+          else
+            echo "⚠️ docs/_headersが存在しません"
+          fi
 
       - name: Create .nojekyll
         run: |
