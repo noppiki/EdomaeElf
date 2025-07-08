@@ -1,0 +1,615 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"io/ioutil"
+	"log"
+	"math"
+	"math/rand"
+	"time"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+)
+
+const (
+	mikoScreenWidth   = 1024
+	mikoScreenHeight  = 768
+	mikoTileSize      = 128
+	mikoScaleFactor   = 0.5
+	mikoMapWidth      = 16
+	mikoMapHeight     = 12
+	playerSpeed       = 2.0
+	worshipperSpeed   = 1.0
+	spawnInterval     = 300 // frames between spawns (5 seconds at 60fps)
+	offeringDuration  = 120 // frames to stay at donation box (2 seconds)
+)
+
+// TileID represents a tile by its x,y position in the tileset
+type TileID struct {
+	X, Y int
+}
+
+func (t TileID) ToIndex() int {
+	return t.Y*8 + t.X
+}
+
+type Player struct {
+	X, Y   float64
+	Width  float64
+	Height float64
+	Image  *ebiten.Image
+}
+
+// WorshipperState represents the current state of a worshipper
+type WorshipperState int
+
+const (
+	StateApproaching WorshipperState = iota
+	StateOffering
+	StateLeaving
+)
+
+// Worshipper represents a shrine visitor
+type Worshipper struct {
+	X, Y          float64
+	Width, Height float64
+	Image         *ebiten.Image
+	State         WorshipperState
+	Timer         int
+	StartX        float64 // Starting position for leaving
+	TargetX       float64 // Target position for leaving
+	Speed         float64
+	Color         color.RGBA // Tint color for variety
+}
+
+// NewWorshipper creates a new worshipper at a random spawn position
+func NewWorshipper(image *ebiten.Image) *Worshipper {
+	// Spawn from random side of screen
+	var startX, startY float64
+	var targetX float64
+	
+	side := rand.Intn(2) // 0 = left, 1 = right
+	if side == 0 {
+		// Spawn from left
+		startX = -50
+		targetX = float64(mikoMapWidth) * mikoTileSize * mikoScaleFactor + 50
+	} else {
+		// Spawn from right
+		startX = float64(mikoMapWidth) * mikoTileSize * mikoScaleFactor + 50
+		targetX = -50
+	}
+	
+	startY = float64(mikoMapHeight-1) * mikoTileSize * mikoScaleFactor // Bottom of screen
+	
+	// Random color tint for variety
+	colors := []color.RGBA{
+		{255, 255, 255, 255}, // White (no tint)
+		{255, 200, 200, 255}, // Light red
+		{200, 255, 200, 255}, // Light green
+		{200, 200, 255, 255}, // Light blue
+		{255, 255, 200, 255}, // Light yellow
+	}
+	
+	return &Worshipper{
+		X:       startX,
+		Y:       startY,
+		Width:   32,
+		Height:  32,
+		Image:   image,
+		State:   StateApproaching,
+		Timer:   0,
+		StartX:  startX,
+		TargetX: targetX,
+		Speed:   worshipperSpeed + rand.Float64()*0.5, // Random speed variation
+		Color:   colors[rand.Intn(len(colors))],
+	}
+}
+
+// Update updates the worshipper's state and position
+func (w *Worshipper) Update() {
+	switch w.State {
+	case StateApproaching:
+		// Move towards donation box
+		donationBoxX := float64(8) * mikoTileSize * mikoScaleFactor
+		donationBoxY := float64(4) * mikoTileSize * mikoScaleFactor
+		
+		// Calculate direction to donation box
+		dx := donationBoxX - w.X
+		dy := donationBoxY - w.Y
+		
+		// Calculate distance
+		distance := math.Sqrt(dx*dx + dy*dy)
+		
+		// If close enough to donation box, start offering
+		if distance < 20 {
+			w.State = StateOffering
+			w.Timer = 0
+			return
+		}
+		
+		// Move towards donation box
+		if distance > 0 {
+			w.X += (dx / distance) * w.Speed
+			w.Y += (dy / distance) * w.Speed
+		}
+		
+	case StateOffering:
+		// Stay at donation box for a while
+		w.Timer++
+		if w.Timer >= offeringDuration {
+			w.State = StateLeaving
+			w.Timer = 0
+		}
+		
+	case StateLeaving:
+		// Move towards target exit position
+		dx := w.TargetX - w.X
+		dy := (float64(mikoMapHeight) * mikoTileSize * mikoScaleFactor) - w.Y
+		
+		// Calculate distance
+		distance := math.Sqrt(dx*dx + dy*dy)
+		
+		// Move towards exit
+		if distance > 0 {
+			w.X += (dx / distance) * w.Speed
+			w.Y += (dy / distance) * w.Speed
+		}
+	}
+}
+
+// IsOffScreen checks if worshipper is off screen and should be removed
+func (w *Worshipper) IsOffScreen() bool {
+	return w.State == StateLeaving && (w.X < -100 || w.X > float64(mikoMapWidth)*mikoTileSize*mikoScaleFactor+100)
+}
+
+type MikoGameWithWorshippers struct {
+	tilemapImage   *ebiten.Image
+	tileDesc       map[string]string
+	shrineMap      [][]TileID
+	player         *Player
+	cameraX        float64
+	cameraY        float64
+	editMode       bool
+	selectedTile   TileID
+	worshippers    []*Worshipper
+	spawnTimer     int
+	worshipperImage *ebiten.Image
+	donationCount  int
+	totalDonations int
+}
+
+func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
+	// Initialize random seed
+	rand.Seed(time.Now().UnixNano())
+	
+	// Load the tilemap image
+	tilemapImg, _, err := ebitenutil.NewImageFromFile("assets/tilemap/japanese_town_tileset.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Load player image
+	playerImg, _, err := ebitenutil.NewImageFromFile("assets/characters/miko_girl.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Load tile descriptions (make this optional to avoid hard-coded paths)
+	var tileDesc map[string]string
+	jsonData, err := ioutil.ReadFile("/Users/odakatoshikatsu/Downloads/shrine_tileset_8x8_description.json")
+	if err != nil {
+		// If file doesn't exist, create empty map
+		tileDesc = make(map[string]string)
+	} else {
+		err = json.Unmarshal(jsonData, &tileDesc)
+		if err != nil {
+			tileDesc = make(map[string]string)
+		}
+	}
+
+	// Create player
+	player := &Player{
+		X:      float64(mikoMapWidth/2) * mikoTileSize * mikoScaleFactor,
+		Y:      float64(mikoMapHeight/2) * mikoTileSize * mikoScaleFactor,
+		Width:  32,
+		Height: 32,
+		Image:  playerImg,
+	}
+
+	// Create the shrine map
+	shrineMap := createMikoShrineMap()
+
+	return &MikoGameWithWorshippers{
+		tilemapImage:    tilemapImg,
+		tileDesc:        tileDesc,
+		shrineMap:       shrineMap,
+		player:          player,
+		cameraX:         0,
+		cameraY:         0,
+		editMode:        false,
+		selectedTile:    TileID{0, 0},
+		worshippers:     make([]*Worshipper, 0),
+		spawnTimer:      0,
+		worshipperImage: playerImg, // Use same image as player for now
+		donationCount:   0,
+		totalDonations:  0,
+	}
+}
+
+func createMikoShrineMap() [][]TileID {
+	// Initialize map with grass
+	shrineMap := make([][]TileID, mikoMapHeight)
+	for i := range shrineMap {
+		shrineMap[i] = make([]TileID, mikoMapWidth)
+		for j := range shrineMap[i] {
+			shrineMap[i][j] = TileID{0, 5} // 草地（1）
+		}
+	}
+
+	// Create the main path (stone path from bottom to shrine)
+	for y := 8; y < mikoMapHeight; y++ {
+		shrineMap[y][8] = TileID{0, 1} // 石畳（縦）
+	}
+
+	// Place torii gate at entrance
+	shrineMap[10][7] = TileID{0, 2} // 鳥居（左半分）
+	shrineMap[10][8] = TileID{1, 2} // 鳥居（右半分）
+
+	// Stone lanterns along the path
+	shrineMap[8][6] = TileID{2, 2} // 石灯籠（上部）
+	shrineMap[9][6] = TileID{3, 2} // 石灯籠（下部）
+	shrineMap[8][10] = TileID{2, 2} // 石灯籠（上部）
+	shrineMap[9][10] = TileID{3, 2} // 石灯籠（下部）
+
+	// Stairs leading to shrine
+	shrineMap[5][8] = TileID{0, 3} // 石階段（上段）
+	shrineMap[6][8] = TileID{0, 6} // 石階段（中段）
+	shrineMap[7][8] = TileID{1, 6} // 石階段（下段）
+
+	// Create shrine building
+	// Roof
+	shrineMap[1][6] = TileID{4, 0}  // 拝殿屋根（上端・左）
+	shrineMap[1][7] = TileID{5, 0}  // 拝殿屋根（上端・中左）
+	shrineMap[1][8] = TileID{6, 0}  // 拝殿屋根（上端・中右）
+	shrineMap[1][9] = TileID{7, 0}  // 拝殿屋根（上端・右）
+
+	// Shrine walls
+	shrineMap[2][6] = TileID{5, 1}  // 拝殿壁（格子・左）
+	shrineMap[2][7] = TileID{6, 1}  // 拝殿壁（格子・中央）
+	shrineMap[2][8] = TileID{4, 1}  // 拝殿入口（正面）
+	shrineMap[2][9] = TileID{7, 1}  // 拝殿壁（格子・右）
+
+	// Shrine floor
+	shrineMap[3][6] = TileID{4, 2}  // 拝殿縁側（左）
+	shrineMap[3][7] = TileID{5, 2}  // 拝殿縁側（中央）
+	shrineMap[3][8] = TileID{5, 2}  // 拝殿縁側（中央）
+	shrineMap[3][9] = TileID{5, 2}  // 拝殿縁側（中央）
+
+	// Place donation box
+	shrineMap[4][8] = TileID{1, 4} // 賽銭箱
+
+	// Hand washing basin
+	shrineMap[6][5] = TileID{2, 4} // 手水舎（手洗い鉢）
+
+	// Sacred tree
+	shrineMap[3][3] = TileID{3, 1} // 御神木（上部）
+
+	// Cherry trees
+	// Left cherry tree
+	shrineMap[2][1] = TileID{4, 4} // 桜の木（上部・左）
+	shrineMap[2][2] = TileID{5, 4} // 桜の木（上部・右）
+	shrineMap[3][1] = TileID{6, 5} // 桜の木（中段・左）
+	shrineMap[3][2] = TileID{7, 5} // 桜の木（中段・右）
+	shrineMap[4][1] = TileID{6, 6} // 桜の木（幹・左）
+	shrineMap[4][2] = TileID{7, 6} // 桜の木（幹・右）
+	shrineMap[5][1] = TileID{6, 7} // 桜の木（根元・左）
+	shrineMap[5][2] = TileID{7, 7} // 桜の木（根元・右）
+
+	// Right cherry tree
+	shrineMap[2][13] = TileID{4, 4} // 桜の木（上部・左）
+	shrineMap[2][14] = TileID{5, 4} // 桜の木（上部・右）
+	shrineMap[3][13] = TileID{6, 5} // 桜の木（中段・左）
+	shrineMap[3][14] = TileID{7, 5} // 桜の木（中段・右）
+	shrineMap[4][13] = TileID{6, 6} // 桜の木（幹・左）
+	shrineMap[4][14] = TileID{7, 6} // 桜の木（幹・右）
+	shrineMap[5][13] = TileID{6, 7} // 桜の木（根元・左）
+	shrineMap[5][14] = TileID{7, 7} // 桜の木（根元・右）
+
+	// Add some gravel areas around the shrine
+	for y := 4; y <= 6; y++ {
+		for x := 6; x <= 10; x++ {
+			if shrineMap[y][x].X == 0 && shrineMap[y][x].Y == 5 {
+				shrineMap[y][x] = TileID{2, 1} // 敷砂利／砂地タイル
+			}
+		}
+	}
+
+	return shrineMap
+}
+
+func (g *MikoGameWithWorshippers) Update() error {
+	// Toggle edit mode
+	if inpututil.IsKeyJustPressed(ebiten.KeyE) {
+		g.editMode = !g.editMode
+	}
+
+	if !g.editMode {
+		// Player movement with WASD
+		if ebiten.IsKeyPressed(ebiten.KeyW) || ebiten.IsKeyPressed(ebiten.KeyArrowUp) {
+			g.player.Y -= playerSpeed
+		}
+		if ebiten.IsKeyPressed(ebiten.KeyS) || ebiten.IsKeyPressed(ebiten.KeyArrowDown) {
+			g.player.Y += playerSpeed
+		}
+		if ebiten.IsKeyPressed(ebiten.KeyA) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft) {
+			g.player.X -= playerSpeed
+		}
+		if ebiten.IsKeyPressed(ebiten.KeyD) || ebiten.IsKeyPressed(ebiten.KeyArrowRight) {
+			g.player.X += playerSpeed
+		}
+
+		// Keep player within map bounds
+		mapWidthPixels := float64(mikoMapWidth) * mikoTileSize * mikoScaleFactor
+		mapHeightPixels := float64(mikoMapHeight) * mikoTileSize * mikoScaleFactor
+		
+		if g.player.X < 0 {
+			g.player.X = 0
+		}
+		if g.player.X > mapWidthPixels-g.player.Width {
+			g.player.X = mapWidthPixels - g.player.Width
+		}
+		if g.player.Y < 0 {
+			g.player.Y = 0
+		}
+		if g.player.Y > mapHeightPixels-g.player.Height {
+			g.player.Y = mapHeightPixels - g.player.Height
+		}
+
+		// Camera follows player
+		g.cameraX = g.player.X - float64(mikoScreenWidth)/2 + g.player.Width/2
+		g.cameraY = g.player.Y - float64(mikoScreenHeight)/2 + g.player.Height/2
+
+		// Keep camera within bounds
+		maxCameraX := mapWidthPixels - float64(mikoScreenWidth)
+		maxCameraY := mapHeightPixels - float64(mikoScreenHeight)
+		
+		if g.cameraX < 0 {
+			g.cameraX = 0
+		}
+		if g.cameraX > maxCameraX {
+			g.cameraX = maxCameraX
+		}
+		if g.cameraY < 0 {
+			g.cameraY = 0
+		}
+		if g.cameraY > maxCameraY {
+			g.cameraY = maxCameraY
+		}
+	} else {
+		// Edit mode controls
+		// Tile selection
+		if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
+			g.selectedTile.X--
+			if g.selectedTile.X < 0 {
+				g.selectedTile.X = 7
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+			g.selectedTile.X++
+			if g.selectedTile.X > 7 {
+				g.selectedTile.X = 0
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyT) {
+			g.selectedTile.Y--
+			if g.selectedTile.Y < 0 {
+				g.selectedTile.Y = 7
+			}
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyY) {
+			g.selectedTile.Y++
+			if g.selectedTile.Y > 7 {
+				g.selectedTile.Y = 0
+			}
+		}
+
+		// Place tile with mouse
+		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+			mx, my := ebiten.CursorPosition()
+			// Convert screen coordinates to map coordinates
+			mapX := int((float64(mx) + g.cameraX) / (mikoTileSize * mikoScaleFactor))
+			mapY := int((float64(my) + g.cameraY) / (mikoTileSize * mikoScaleFactor))
+
+			if mapX >= 0 && mapX < mikoMapWidth && mapY >= 0 && mapY < mikoMapHeight {
+				g.shrineMap[mapY][mapX] = g.selectedTile
+			}
+		}
+	}
+
+	// Reset camera with Space (only in edit mode)
+	if g.editMode && inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+		g.cameraX = 0
+		g.cameraY = 0
+	}
+
+	// Worshipper system updates
+	g.updateWorshippers()
+
+	return nil
+}
+
+func (g *MikoGameWithWorshippers) updateWorshippers() {
+	// Increment spawn timer
+	g.spawnTimer++
+	
+	// Spawn new worshipper randomly
+	if g.spawnTimer >= spawnInterval && rand.Float64() < 0.3 { // 30% chance every spawn interval
+		g.worshippers = append(g.worshippers, NewWorshipper(g.worshipperImage))
+		g.spawnTimer = 0
+	}
+	
+	// Update existing worshippers
+	for i := 0; i < len(g.worshippers); i++ {
+		worshipper := g.worshippers[i]
+		oldState := worshipper.State
+		
+		worshipper.Update()
+		
+		// Check if worshipper just started offering (for donation counting)
+		if oldState == StateApproaching && worshipper.State == StateOffering {
+			g.donationCount++
+			g.totalDonations++
+		}
+		
+		// Remove worshippers that are off screen
+		if worshipper.IsOffScreen() {
+			g.worshippers = append(g.worshippers[:i], g.worshippers[i+1:]...)
+			i--
+		}
+	}
+}
+
+func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
+	// Clear screen
+	screen.Fill(color.RGBA{135, 206, 235, 255})
+
+	// Draw the map
+	for y := 0; y < mikoMapHeight; y++ {
+		for x := 0; x < mikoMapWidth; x++ {
+			tile := g.shrineMap[y][x]
+
+			// Calculate source position in tilemap
+			srcX := tile.X * mikoTileSize
+			srcY := tile.Y * mikoTileSize
+
+			// Calculate destination position with camera offset
+			destX := float64(x)*mikoTileSize*mikoScaleFactor - g.cameraX
+			destY := float64(y)*mikoTileSize*mikoScaleFactor - g.cameraY
+
+			// Skip tiles outside screen
+			if destX < -mikoTileSize*mikoScaleFactor || destX > mikoScreenWidth ||
+				destY < -mikoTileSize*mikoScaleFactor || destY > mikoScreenHeight {
+				continue
+			}
+
+			// Draw tile
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Scale(mikoScaleFactor, mikoScaleFactor)
+			op.GeoM.Translate(destX, destY)
+
+			screen.DrawImage(g.tilemapImage.SubImage(
+				image.Rect(srcX, srcY, srcX+mikoTileSize, srcY+mikoTileSize),
+			).(*ebiten.Image), op)
+		}
+	}
+
+	// Draw worshippers
+	for _, worshipper := range g.worshippers {
+		g.drawWorshipper(screen, worshipper)
+	}
+
+	// Draw player
+	if !g.editMode {
+		playerOp := &ebiten.DrawImageOptions{}
+		playerScale := 0.125
+		playerOp.GeoM.Scale(playerScale, playerScale)
+		playerOp.GeoM.Translate(g.player.X-g.cameraX, g.player.Y-g.cameraY)
+		screen.DrawImage(g.player.Image, playerOp)
+	}
+
+	// Draw UI
+	info := fmt.Sprintf("巫女さんの神社探索 - 参拝客システム\nFPS: %.2f\n", ebiten.ActualFPS())
+	info += fmt.Sprintf("参拝客数: %d\n", len(g.worshippers))
+	info += fmt.Sprintf("現在の賽銭: %d\n", g.donationCount)
+	info += fmt.Sprintf("総賽銭: %d\n", g.totalDonations)
+	
+	if g.editMode {
+		tileKey := fmt.Sprintf("%d,%d", g.selectedTile.X, g.selectedTile.Y)
+		tileDesc := g.tileDesc[tileKey]
+		info += fmt.Sprintf("\n[編集モード]\n選択タイル: %s\n%s\n", tileKey, tileDesc)
+		info += "Q/R: タイルX選択, T/Y: タイルY選択\n左クリック: タイル配置\nSpace: カメラリセット"
+	} else {
+		info += fmt.Sprintf("\nプレイヤー位置: (%.0f, %.0f)\n", g.player.X, g.player.Y)
+		info += "WASD/矢印キー: 移動\nE: 編集モード切替"
+	}
+	
+	ebitenutil.DebugPrint(screen, info)
+
+	// Draw selected tile preview in edit mode
+	if g.editMode {
+		// Draw preview box
+		previewX := mikoScreenWidth - 100
+		previewY := 10
+		previewSize := 64.0
+		
+		// Background
+		ebitenutil.DrawRect(screen, float64(previewX-5), float64(previewY-5), 
+			previewSize+10, previewSize+10, color.RGBA{0, 0, 0, 180})
+		
+		// Selected tile
+		op := &ebiten.DrawImageOptions{}
+		scale := previewSize / float64(mikoTileSize)
+		op.GeoM.Scale(scale, scale)
+		op.GeoM.Translate(float64(previewX), float64(previewY))
+		
+		srcX := g.selectedTile.X * mikoTileSize
+		srcY := g.selectedTile.Y * mikoTileSize
+		
+		screen.DrawImage(g.tilemapImage.SubImage(
+			image.Rect(srcX, srcY, srcX+mikoTileSize, srcY+mikoTileSize),
+		).(*ebiten.Image), op)
+	}
+}
+
+func (g *MikoGameWithWorshippers) drawWorshipper(screen *ebiten.Image, worshipper *Worshipper) {
+	op := &ebiten.DrawImageOptions{}
+	
+	// Scale worshipper
+	scale := 0.1 // Smaller than player
+	op.GeoM.Scale(scale, scale)
+	
+	// Position with camera offset
+	op.GeoM.Translate(worshipper.X-g.cameraX, worshipper.Y-g.cameraY)
+	
+	// Apply color tint
+	op.ColorScale.ScaleWithColor(worshipper.Color)
+	
+	// Add special effects for different states
+	switch worshipper.State {
+	case StateOffering:
+		// Add a slight bounce effect while offering
+		bounceOffset := math.Sin(float64(worshipper.Timer)*0.3) * 2
+		op.GeoM.Translate(0, bounceOffset)
+	case StateLeaving:
+		// Fade out when leaving
+		alpha := 1.0 - float64(worshipper.Timer)/300.0
+		if alpha < 0.3 {
+			alpha = 0.3
+		}
+		op.ColorScale.Scale(1, 1, 1, float32(alpha))
+	}
+	
+	screen.DrawImage(worshipper.Image, op)
+}
+
+func (g *MikoGameWithWorshippers) Layout(outsideWidth, outsideHeight int) (int, int) {
+	return mikoScreenWidth, mikoScreenHeight
+}
+
+// Run with: go run miko_game_with_worshippers.go
+func main() {
+	ebiten.SetWindowSize(mikoScreenWidth, mikoScreenHeight)
+	ebiten.SetWindowTitle("EdomaeElf - 巫女さんの神社探索（参拝客システム）")
+	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
+
+	game := NewMikoGameWithWorshippers()
+
+	if err := ebiten.RunGame(game); err != nil {
+		log.Fatal(err)
+	}
+}
