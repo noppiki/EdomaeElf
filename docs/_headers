@@ -1,0 +1,13 @@
+# Headers for GitHub Pages
+# WebAssembly MIME type configuration
+
+/*.wasm
+  Content-Type: application/wasm
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Opener-Policy: same-origin
+
+/*.js
+  Content-Type: text/javascript
+
+/*.html
+  Content-Type: text/html; charset=utf-8
