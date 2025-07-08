@@ -112,62 +112,6 @@ jobs:
         run: |
           echo "📄 HTMLファイルとアセットをコピー"
           
-          # index.htmlが存在しない場合は基本的なものを作成
-          if [ ! -f "docs/index.html" ]; then
-            echo "⚠️ index.htmlが存在しません。基本的なHTMLを作成します。"
-            cat > docs/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>江戸前エルフ</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            background: #222;
-        }
-        #loading {
-            color: white;
-            font-family: sans-serif;
-            font-size: 1.5em;
-        }
-        canvas {
-            border: 1px solid #444;
-        }
-    </style>
-</head>
-<body>
-    <div id="loading">読み込み中...</div>
-    <script src="wasm_exec.js"></script>
-    <script>
-        if (!WebAssembly.instantiateStreaming) {
-            WebAssembly.instantiateStreaming = async (resp, importObject) => {
-                const source = await (await resp).arrayBuffer();
-                return await WebAssembly.instantiate(source, importObject);
-            };
-        }
-        
-        const go = new Go();
-        WebAssembly.instantiateStreaming(fetch("game.wasm"), go.importObject).then((result) => {
-            go.run(result.instance);
-            document.getElementById('loading').style.display = 'none';
-        }).catch((err) => {
-            console.error(err);
-            document.getElementById('loading').textContent = 'エラー: ' + err.message;
-        });
-    </script>
-</body>
-</html>
-EOF
-          else
-            echo "✅ 既存のindex.htmlを使用"
-          fi
-          
           # アセットディレクトリをコピー
           if [ -d "assets" ]; then
             cp -r assets docs/
