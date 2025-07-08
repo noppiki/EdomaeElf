@@ -1,0 +1,23 @@
+# GitHub Pages configuration for 江戸前エルフ
+# WebAssembly/WebGL ゲームのための設定
+
+title: "江戸前エルフ - 参拝客システム"
+description: "ランダムなタイミングで参拝客が訪れて、賽銭を入れて去っていくシステム"
+baseurl: "/EdomaeElf"
+url: "https://noppiki.github.io"
+
+# Jekyll設定の無効化（WASMファイルを直接配信）
+plugins: []
+markdown: kramdown
+highlighter: rouge
+
+# MIME types for WASM files
+include:
+  - "_headers"
+  - ".nojekyll"
+
+# ビルドから除外
+exclude:
+  - "README.md"
+  - "build_pages.sh"
+  - "serve_pages.sh"

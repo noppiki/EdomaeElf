@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>江戸前エルフ - 参拝客システム</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #333;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+            max-width: 900px;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #7f8c8d;
+            margin-bottom: 30px;
+            font-size: 1.2em;
+        }
+        
+        .game-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        #canvas {
+            border: 3px solid #34495e;
+            border-radius: 10px;
+            background: #000;
+            max-width: 100%;
+            height: auto;
+        }
+        
+        .loading {
+            display: block;
+            text-align: center;
+            font-size: 1.2em;
+            color: #3498db;
+            margin: 20px 0;
+        }
+        
+        .error {
+            display: none;
+            color: #e74c3c;
+            background: #fadbd8;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #e74c3c;
+        }
+        
+        .controls {
+            background: #ecf0f1;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #3498db;
+        }
+        
+        .controls h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        
+        .controls ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        
+        .features {
+            background: #e8f5e8;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #27ae60;
+        }
+        
+        .features h3 {
+            margin-top: 0;
+            color: #27ae60;
+        }
+        
+        .github-link {
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        .github-link a {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        
+        .github-link a:hover {
+            text-decoration: underline;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+                margin: 10px;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+            
+            .subtitle {
+                font-size: 1em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏮 江戸前エルフ 🏮</h1>
+        <p class="subtitle">ランダム参拝客システム - WebGL版</p>
+        
+        <div class="game-container">
+            <div class="loading" id="loadingText">ゲームを読み込み中...</div>
+            <div class="error" id="errorText">
+                <strong>エラーが発生しました:</strong>
+                <div id="errorDetails"></div>
+                <p>ブラウザがWebAssemblyに対応していることを確認してください。</p>
+            </div>
+            <canvas id="canvas" width="800" height="600" style="display: none;"></canvas>
+        </div>
+        
+        <div class="controls">
+            <h3>🎮 操作方法</h3>
+            <ul>
+                <li><strong>WASD / 矢印キー:</strong> プレイヤー移動</li>
+                <li><strong>E:</strong> 編集モード切替</li>
+                <li><strong>マウス:</strong> 編集モード時の操作</li>
+            </ul>
+        </div>
+        
+        <div class="features">
+            <h3>✨ 参拝客システムの特徴</h3>
+            <ul>
+                <li><strong>ランダム出現:</strong> 5秒間隔で30%の確率で参拝客が出現</li>
+                <li><strong>自動AI行動:</strong> 賽銭箱に向かって移動 → 参拝 → 退場</li>
+                <li><strong>3つの状態管理:</strong> 接近中、参拝中、退場中</li>
+                <li><strong>視覚効果:</strong> 5種類の色バリエーション、バウンスアニメーション</li>
+                <li><strong>統計表示:</strong> 参拝客数、現在の賽銭、総賽銭数</li>
+            </ul>
+        </div>
+        
+        <div class="github-link">
+            <a href="https://github.com/noppiki/EdomaeElf" target="_blank">
+                📁 GitHub リポジトリを見る
+            </a>
+        </div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script>
+        const loadingText = document.getElementById('loadingText');
+        const errorText = document.getElementById('errorText');
+        const errorDetails = document.getElementById('errorDetails');
+        const canvas = document.getElementById('canvas');
+        
+        async function loadGame() {
+            try {
+                // WebAssemblyサポートチェック
+                if (!WebAssembly) {
+                    throw new Error('WebAssemblyがサポートされていません');
+                }
+                
+                loadingText.textContent = 'WebAssemblyを初期化中...';
+                
+                // Goランタイムの初期化
+                const go = new Go();
+                
+                loadingText.textContent = 'ゲームファイルをダウンロード中...';
+                
+                // WASMファイルの読み込み
+                const result = await WebAssembly.instantiateStreaming(
+                    fetch('game.wasm'),
+                    go.importObject
+                );
+                
+                loadingText.textContent = 'ゲームを起動中...';
+                
+                // ゲーム開始
+                go.run(result.instance);
+                
+                // UIの切替
+                loadingText.style.display = 'none';
+                canvas.style.display = 'block';
+                
+            } catch (error) {
+                console.error('ゲーム読み込みエラー:', error);
+                loadingText.style.display = 'none';
+                errorText.style.display = 'block';
+                errorDetails.textContent = error.message;
+            }
+        }
+        
+        // ページ読み込み完了後にゲーム開始
+        window.addEventListener('load', loadGame);
+        
+        // エラーハンドリング
+        window.addEventListener('error', (event) => {
+            console.error('ランタイムエラー:', event.error);
+            errorText.style.display = 'block';
+            errorDetails.textContent = event.error.message || 'ランタイムエラーが発生しました';
+        });
+    </script>
+</body>
+</html>
