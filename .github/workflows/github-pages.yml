@@ -37,8 +37,33 @@ jobs:
 
       - name: Copy Go WASM runtime
         run: |
-          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" docs/
-
+          # Go 1.24+対応: 複数の方法でwasm_exec.jsを取得
+          WASM_EXEC_JS="docs/wasm_exec.js"
+          
+          # 方法1: 標準パスから取得
+          if [ -f "$(go env GOROOT)/misc/wasm/wasm_exec.js" ]; then
+            echo "✅ 標準パスからwasm_exec.jsを取得"
+            cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" "$WASM_EXEC_JS"
+          # 方法2: GitHubから直接ダウンロード
+          else
+            GO_VERSION=$(go version | grep -o 'go[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+            if [ -n "$GO_VERSION" ]; then
+              echo "✅ GitHub (${GO_VERSION})からwasm_exec.jsをダウンロード"
+              curl -f -s -L -o "$WASM_EXEC_JS" "https://raw.githubusercontent.com/golang/go/${GO_VERSION}/misc/wasm/wasm_exec.js"
+            else
+              echo "❌ Go versionの取得に失敗"
+              exit 1
+            fi
+          fi
+          
+          # ファイルが正常に取得できたか確認
+          if [ ! -f "$WASM_EXEC_JS" ]; then
+            echo "❌ wasm_exec.jsの取得に失敗"
+            exit 1
+          fi
+          
+          echo "✅ wasm_exec.js取得完了 ($(wc -c < "$WASM_EXEC_JS") bytes)"
+          
       - name: Copy assets
         run: |
           if [ -d "assets" ]; then
