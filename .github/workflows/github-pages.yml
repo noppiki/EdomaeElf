@@ -37,22 +37,17 @@ jobs:
 
       - name: Copy Go WASM runtime
         run: |
-          # 簡単で確実な方法: バンドル済みファイルを使用
-          echo "✅ バンドル済みwasm_exec.jsを使用"
-          cp wasm_exec.js docs/
-          
-          # ファイルサイズを確認  
-          echo "✅ wasm_exec.js準備完了 ($(wc -c < docs/wasm_exec.js) bytes)"
+          # Go標準のwasm_exec.jsを取得
           echo "✅ 標準パスからwasm_exec.jsを取得"
-          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" "$WASM_EXEC_JS"
+          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" docs/
           
           # ファイルが正常に取得できたか確認
-          if [ ! -f "$WASM_EXEC_JS" ]; then
+          if [ ! -f "docs/wasm_exec.js" ]; then
             echo "❌ wasm_exec.jsの取得に失敗"
             exit 1
           fi
         
-          echo "✅ wasm_exec.js取得完了 ($(wc -c < "$WASM_EXEC_JS") bytes)"
+          echo "✅ wasm_exec.js取得完了 ($(wc -c < docs/wasm_exec.js) bytes)"
           
       - name: Copy assets
         run: |
