@@ -520,24 +520,31 @@ type MikoGameWithWorshippers struct {
 	worshipperImage *ebiten.Image
 	donationCount   int
 	totalDonations  int
+	usingFallback   bool // Track if we're using fallback images
 }
 
 func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
 	// Initialize random seed
 	rand.Seed(time.Now().UnixNano())
 
-	// Load the tilemap image
+	usingFallback := false
+
+	// Load the tilemap image with WebGL-compatible error handling
 	tilemapImg, _, err := ebitenutil.NewImageFromFile("assets/tilemap/japanese_town_tileset.png")
 	if err != nil {
 		log.Printf("Failed to load tilemap image: %v", err)
-		log.Fatal("Critical error: Cannot load tilemap image assets/tilemap/japanese_town_tileset.png")
+		// Create a fallback colored image instead of fatal error
+		tilemapImg = createFallbackTilemapImage()
+		usingFallback = true
 	}
 
-	// Load player image
+	// Load player image with WebGL-compatible error handling
 	playerImg, _, err := ebitenutil.NewImageFromFile("assets/characters/miko_girl.png")
 	if err != nil {
 		log.Printf("Failed to load player image: %v", err)
-		log.Fatal("Critical error: Cannot load player image assets/characters/miko_girl.png")
+		// Create a fallback colored image instead of fatal error
+		playerImg = createFallbackPlayerImage()
+		usingFallback = true
 	}
 
 	// Note: Tile descriptions are not loaded to ensure WebGL compatibility
@@ -567,6 +574,7 @@ func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
 		worshipperImage: playerImg, // Use same image as player for now
 		donationCount:   0,
 		totalDonations:  0,
+		usingFallback:   usingFallback,
 	}
 }
 
@@ -659,6 +667,95 @@ func createMikoShrineMap() [][]TileID {
 	}
 
 	return shrineMap
+}
+
+// createFallbackTilemapImage creates a fallback tilemap image when asset loading fails
+func createFallbackTilemapImage() *ebiten.Image {
+	// Create a 8x8 tilemap of 128x128 pixel tiles
+	img := ebiten.NewImage(8*mikoTileSize, 8*mikoTileSize)
+	
+	// Define colors for different tile types
+	colors := []color.RGBA{
+		{50, 100, 50, 255},   // Green grass
+		{100, 100, 100, 255}, // Gray stone
+		{139, 69, 19, 255},   // Brown dirt
+		{128, 128, 128, 255}, // Light gray
+		{255, 182, 193, 255}, // Light pink
+		{152, 251, 152, 255}, // Light green
+		{176, 196, 222, 255}, // Light steel blue
+		{255, 228, 181, 255}, // Light orange
+	}
+	
+	// Fill tiles with different colors
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			colorIndex := (x + y*8) % len(colors)
+			tileColor := colors[colorIndex]
+			
+			// Create a tile-sized image with the color
+			tileImg := ebiten.NewImage(mikoTileSize, mikoTileSize)
+			tileImg.Fill(tileColor)
+			
+			// Add a border for tile visibility
+			borderColor := color.RGBA{0, 0, 0, 100}
+			for i := 0; i < 2; i++ {
+				// Top and bottom borders
+				for tx := 0; tx < mikoTileSize; tx++ {
+					tileImg.Set(tx, i, borderColor)
+					tileImg.Set(tx, mikoTileSize-1-i, borderColor)
+				}
+				// Left and right borders
+				for ty := 0; ty < mikoTileSize; ty++ {
+					tileImg.Set(i, ty, borderColor)
+					tileImg.Set(mikoTileSize-1-i, ty, borderColor)
+				}
+			}
+			
+			// Draw the tile to the main image
+			op := &ebiten.DrawImageOptions{}
+			op.GeoM.Translate(float64(x*mikoTileSize), float64(y*mikoTileSize))
+			img.DrawImage(tileImg, op)
+		}
+	}
+	
+	return img
+}
+
+// createFallbackPlayerImage creates a fallback player image when asset loading fails
+func createFallbackPlayerImage() *ebiten.Image {
+	// Create a simple colored rectangle to represent the player
+	img := ebiten.NewImage(256, 256) // Use a reasonable size
+	
+	// Fill with a distinctive color (red for player)
+	img.Fill(color.RGBA{255, 100, 100, 255})
+	
+	// Add a simple face or pattern
+	centerX, centerY := 128, 128
+	
+	// Draw eyes
+	eyeSize := 20
+	eyeColor := color.RGBA{0, 0, 0, 255}
+	
+	// Left eye
+	eyeImg := ebiten.NewImage(eyeSize, eyeSize)
+	eyeImg.Fill(eyeColor)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(float64(centerX-40), float64(centerY-20))
+	img.DrawImage(eyeImg, op)
+	
+	// Right eye
+	op2 := &ebiten.DrawImageOptions{}
+	op2.GeoM.Translate(float64(centerX+20), float64(centerY-20))
+	img.DrawImage(eyeImg, op2)
+	
+	// Draw mouth
+	mouthImg := ebiten.NewImage(40, 10)
+	mouthImg.Fill(eyeColor)
+	op3 := &ebiten.DrawImageOptions{}
+	op3.GeoM.Translate(float64(centerX-20), float64(centerY+20))
+	img.DrawImage(mouthImg, op3)
+	
+	return img
 }
 
 func (g *MikoGameWithWorshippers) Update() error {
@@ -856,6 +953,10 @@ func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
 	info += fmt.Sprintf("参拝客数: %d\n", len(g.worshippers))
 	info += fmt.Sprintf("現在の賽銭: %d\n", g.donationCount)
 	info += fmt.Sprintf("総賽銭: %d\n", g.totalDonations)
+
+	if g.usingFallback {
+		info += "\n[WebGL互換モード] フォールバック画像を使用中\n"
+	}
 
 	if g.editMode {
 		tileKey := fmt.Sprintf("%d,%d", g.selectedTile.X, g.selectedTile.Y)
