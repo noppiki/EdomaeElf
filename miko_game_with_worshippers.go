@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/heap"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -9,7 +10,6 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"sort"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -28,6 +28,15 @@ const (
 	worshipperSpeed  = 1.0
 	spawnInterval    = 300 // frames between spawns (5 seconds at 60fps)
 	offeringDuration = 120 // frames to stay at donation box (2 seconds)
+
+	// Pathfinding constants
+	donationBoxX                  = 8
+	donationBoxY                  = 4
+	maxSearchRadius               = 5
+	pathfindingProximityThreshold = 10.0
+
+	// Default tile description file path (optional)
+	defaultTileDescFile = "shrine_tileset_8x8_description.json"
 )
 
 // TileID represents a tile by its x,y position in the tileset
@@ -72,6 +81,18 @@ func (nl *NodeList) Pop() interface{} {
 	return item
 }
 
+// Walkable tiles map for O(1) lookups
+var walkableTilesMap = map[TileID]bool{
+	{0, 1}: true, // Stone path (vertical)
+	{0, 5}: true, // Grass
+	{2, 1}: true, // Gravel/sand
+	{0, 3}: true, // Stone stairs (top)
+	{0, 6}: true, // Stone stairs (middle)
+	{1, 6}: true, // Stone stairs (bottom)
+	{4, 2}: true, // Shrine floor (left)
+	{5, 2}: true, // Shrine floor (center)
+}
+
 type Player struct {
 	X, Y   float64
 	Width  float64
@@ -86,26 +107,12 @@ func isWalkable(shrineMap [][]TileID, x, y int) bool {
 	}
 
 	tile := shrineMap[y][x]
+	return walkableTilesMap[tile]
+}
 
-	// Define walkable tiles
-	walkableTiles := []TileID{
-		{0, 1}, // Stone path (vertical)
-		{0, 5}, // Grass
-		{2, 1}, // Gravel/sand
-		{0, 3}, // Stone stairs (top)
-		{0, 6}, // Stone stairs (middle)
-		{1, 6}, // Stone stairs (bottom)
-		{4, 2}, // Shrine floor (left)
-		{5, 2}, // Shrine floor (center)
-	}
-
-	for _, walkableTile := range walkableTiles {
-		if tile.X == walkableTile.X && tile.Y == walkableTile.Y {
-			return true
-		}
-	}
-
-	return false
+// isValidPosition checks if a position is within map bounds
+func isValidPosition(p Point) bool {
+	return p.X >= 0 && p.X < mikoMapWidth && p.Y >= 0 && p.Y < mikoMapHeight
 }
 
 // manhattanDistance calculates the Manhattan distance between two points
@@ -114,9 +121,31 @@ func manhattanDistance(a, b Point) float64 {
 }
 
 // findPath uses A* algorithm to find a path from start to goal
-func findPath(shrineMap [][]TileID, start, goal Point) []Point {
+func findPath(shrineMap [][]TileID, start, goal Point) ([]Point, error) {
+	// Validate input coordinates
+	if !isValidPosition(start) {
+		return nil, fmt.Errorf("invalid start position: (%d, %d)", start.X, start.Y)
+	}
+	if !isValidPosition(goal) {
+		return nil, fmt.Errorf("invalid goal position: (%d, %d)", goal.X, goal.Y)
+	}
+
+	// Check if start and goal are walkable
+	if !isWalkable(shrineMap, start.X, start.Y) {
+		return nil, fmt.Errorf("start position is not walkable: (%d, %d)", start.X, start.Y)
+	}
+	if !isWalkable(shrineMap, goal.X, goal.Y) {
+		return nil, fmt.Errorf("goal position is not walkable: (%d, %d)", goal.X, goal.Y)
+	}
+
+	// If start equals goal, return trivial path
+	if start.X == goal.X && start.Y == goal.Y {
+		return []Point{start}, nil
+	}
+
 	// Initialize open and closed lists
 	openList := &NodeList{}
+	heap.Init(openList)
 	closedList := make(map[Point]*Node)
 
 	startNode := &Node{
@@ -127,28 +156,30 @@ func findPath(shrineMap [][]TileID, start, goal Point) []Point {
 		F:      manhattanDistance(start, goal),
 	}
 
-	*openList = append(*openList, startNode)
+	heap.Push(openList, startNode)
 
 	directions := []Point{{0, 1}, {1, 0}, {0, -1}, {-1, 0}} // Down, Right, Up, Left
 
-	for len(*openList) > 0 {
-		// Sort open list by F value
-		sort.Sort(openList)
-
-		current := (*openList)[0]
-		*openList = (*openList)[1:]
+	for openList.Len() > 0 {
+		// Get the node with lowest F value
+		current := heap.Pop(openList).(*Node)
 
 		// Add current node to closed list
 		closedList[current.Point] = current
 
 		// Check if we've reached the goal
 		if current.Point.X == goal.X && current.Point.Y == goal.Y {
-			// Reconstruct path
-			path := []Point{}
+			// Reconstruct path efficiently
+			path := make([]Point, 0)
 			for node := current; node != nil; node = node.Parent {
-				path = append([]Point{node.Point}, path...)
+				path = append(path, node.Point)
 			}
-			return path
+			// Reverse path to get correct order (start to goal)
+			for i := len(path)/2 - 1; i >= 0; i-- {
+				opp := len(path) - 1 - i
+				path[i], path[opp] = path[opp], path[i]
+			}
+			return path, nil
 		}
 
 		// Check all neighbors
@@ -173,8 +204,8 @@ func findPath(shrineMap [][]TileID, start, goal Point) []Point {
 			h := manhattanDistance(neighborPoint, goal)
 			f := g + h
 
-			// Check if neighbor is already in open list
-			neighborInOpen := false
+			// Check if neighbor is already in open list with better path
+			found := false
 			for _, node := range *openList {
 				if node.Point.X == neighborPoint.X && node.Point.Y == neighborPoint.Y {
 					if g < node.G {
@@ -182,14 +213,15 @@ func findPath(shrineMap [][]TileID, start, goal Point) []Point {
 						node.G = g
 						node.F = f
 						node.Parent = current
+						heap.Fix(openList, 0) // Re-heapify since we modified a node
 					}
-					neighborInOpen = true
+					found = true
 					break
 				}
 			}
 
 			// Add neighbor to open list if not already there
-			if !neighborInOpen {
+			if !found {
 				neighborNode := &Node{
 					Point:  neighborPoint,
 					Parent: current,
@@ -197,13 +229,13 @@ func findPath(shrineMap [][]TileID, start, goal Point) []Point {
 					H:      h,
 					F:      f,
 				}
-				*openList = append(*openList, neighborNode)
+				heap.Push(openList, neighborNode)
 			}
 		}
 	}
 
 	// No path found
-	return []Point{}
+	return nil, fmt.Errorf("no path found from (%d, %d) to (%d, %d)", start.X, start.Y, goal.X, goal.Y)
 }
 
 // WorshipperState represents the current state of a worshipper
@@ -246,16 +278,16 @@ func tileToPixel(p Point) (float64, float64) {
 }
 
 // findNearestWalkableTile finds the nearest walkable tile to the given position
-func findNearestWalkableTile(shrineMap [][]TileID, x, y float64) Point {
+func findNearestWalkableTile(shrineMap [][]TileID, x, y float64) (Point, error) {
 	tilePos := pixelToTile(x, y)
 
 	// If current position is walkable, return it
 	if isWalkable(shrineMap, tilePos.X, tilePos.Y) {
-		return tilePos
+		return tilePos, nil
 	}
 
 	// Search in expanding circles
-	for radius := 1; radius <= 5; radius++ {
+	for radius := 1; radius <= maxSearchRadius; radius++ {
 		for dx := -radius; dx <= radius; dx++ {
 			for dy := -radius; dy <= radius; dy++ {
 				if dx == 0 && dy == 0 {
@@ -264,14 +296,19 @@ func findNearestWalkableTile(shrineMap [][]TileID, x, y float64) Point {
 				checkX := tilePos.X + dx
 				checkY := tilePos.Y + dy
 				if isWalkable(shrineMap, checkX, checkY) {
-					return Point{checkX, checkY}
+					return Point{checkX, checkY}, nil
 				}
 			}
 		}
 	}
 
 	// Fallback to bottom center if no walkable tile found
-	return Point{mikoMapWidth / 2, mikoMapHeight - 1}
+	fallbackPoint := Point{mikoMapWidth / 2, mikoMapHeight - 1}
+	if isWalkable(shrineMap, fallbackPoint.X, fallbackPoint.Y) {
+		return fallbackPoint, nil
+	}
+
+	return Point{}, fmt.Errorf("no walkable tile found near position (%.2f, %.2f)", x, y)
 }
 
 // NewWorshipper creates a new worshipper at a random spawn position
@@ -319,13 +356,24 @@ func NewWorshipper(image *ebiten.Image, shrineMap [][]TileID) *Worshipper {
 	}
 
 	// Find nearest walkable tile to starting position
-	startTile := findNearestWalkableTile(shrineMap, startX, startY)
+	startTile, err := findNearestWalkableTile(shrineMap, startX, startY)
+	if err != nil {
+		// Log error but continue with fallback behavior
+		log.Printf("Warning: Could not find walkable starting tile: %v", err)
+		startTile = Point{mikoMapWidth / 2, mikoMapHeight - 1}
+	}
 
-	// Donation box is at tile (8, 4)
-	donationBoxTile := Point{8, 4}
+	// Donation box is at predefined position
+	donationBoxTile := Point{donationBoxX, donationBoxY}
 
 	// Calculate path to donation box
-	path := findPath(shrineMap, startTile, donationBoxTile)
+	path, err := findPath(shrineMap, startTile, donationBoxTile)
+	if err != nil {
+		// Log error but continue with empty path (fallback behavior)
+		log.Printf("Warning: Could not find path to donation box: %v", err)
+		path = []Point{}
+	}
+
 	if len(path) > 0 {
 		worshipper.Path = path
 		worshipper.PathIndex = 0
@@ -349,7 +397,7 @@ func (w *Worshipper) Update(shrineMap [][]TileID) {
 			distance := math.Sqrt(dx*dx + dy*dy)
 
 			// If close enough to current target, move to next path point
-			if distance < 10 {
+			if distance < pathfindingProximityThreshold {
 				w.PathIndex++
 				if w.PathIndex < len(w.Path) {
 					w.NextTarget = w.Path[w.PathIndex]
@@ -368,11 +416,11 @@ func (w *Worshipper) Update(shrineMap [][]TileID) {
 			}
 		} else {
 			// Fallback to direct movement if no path
-			donationBoxX := float64(8) * mikoTileSize * mikoScaleFactor
-			donationBoxY := float64(4) * mikoTileSize * mikoScaleFactor
+			donationBoxPixelX := float64(donationBoxX) * mikoTileSize * mikoScaleFactor
+			donationBoxPixelY := float64(donationBoxY) * mikoTileSize * mikoScaleFactor
 
-			dx := donationBoxX - w.X
-			dy := donationBoxY - w.Y
+			dx := donationBoxPixelX - w.X
+			dy := donationBoxPixelY - w.Y
 			distance := math.Sqrt(dx*dx + dy*dy)
 
 			if distance < 20 {
@@ -396,9 +444,20 @@ func (w *Worshipper) Update(shrineMap [][]TileID) {
 
 			// Calculate path to exit
 			currentTile := pixelToTile(w.X, w.Y)
-			exitTile := findNearestWalkableTile(shrineMap, w.TargetX, float64(mikoMapHeight-1)*mikoTileSize*mikoScaleFactor)
+			exitTile, err := findNearestWalkableTile(shrineMap, w.TargetX, float64(mikoMapHeight-1)*mikoTileSize*mikoScaleFactor)
+			if err != nil {
+				// Log error but continue with fallback behavior
+				log.Printf("Warning: Could not find walkable exit tile: %v", err)
+				exitTile = Point{mikoMapWidth / 2, mikoMapHeight - 1}
+			}
 
-			exitPath := findPath(shrineMap, currentTile, exitTile)
+			exitPath, err := findPath(shrineMap, currentTile, exitTile)
+			if err != nil {
+				// Log error but continue with empty path (fallback behavior)
+				log.Printf("Warning: Could not find path to exit: %v", err)
+				exitPath = []Point{}
+			}
+
 			if len(exitPath) > 0 {
 				w.Path = exitPath
 				w.PathIndex = 0
@@ -417,7 +476,7 @@ func (w *Worshipper) Update(shrineMap [][]TileID) {
 			distance := math.Sqrt(dx*dx + dy*dy)
 
 			// If close enough to current target, move to next path point
-			if distance < 10 {
+			if distance < pathfindingProximityThreshold {
 				w.PathIndex++
 				if w.PathIndex < len(w.Path) {
 					w.NextTarget = w.Path[w.PathIndex]
@@ -484,17 +543,28 @@ func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
 		log.Fatal(err)
 	}
 
-	// Load tile descriptions (make this optional to avoid hard-coded paths)
+	// Load tile descriptions (optional - tries multiple paths)
 	var tileDesc map[string]string
-	jsonData, err := ioutil.ReadFile("/Users/odakatoshikatsu/Downloads/shrine_tileset_8x8_description.json")
-	if err != nil {
-		// If file doesn't exist, create empty map
-		tileDesc = make(map[string]string)
-	} else {
-		err = json.Unmarshal(jsonData, &tileDesc)
-		if err != nil {
-			tileDesc = make(map[string]string)
+	tileDescPaths := []string{
+		defaultTileDescFile,
+		"assets/tilemap/" + defaultTileDescFile,
+		"tilemap/" + defaultTileDescFile,
+	}
+
+	tileDesc = make(map[string]string)
+	for _, path := range tileDescPaths {
+		jsonData, err := ioutil.ReadFile(path)
+		if err == nil {
+			err = json.Unmarshal(jsonData, &tileDesc)
+			if err == nil {
+				log.Printf("Loaded tile descriptions from: %s", path)
+				break
+			}
 		}
+	}
+
+	if len(tileDesc) == 0 {
+		log.Printf("No tile descriptions loaded - using empty map")
 	}
 
 	// Create player
