@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -17,16 +18,16 @@ import (
 )
 
 const (
-	mikoScreenWidth   = 1024
-	mikoScreenHeight  = 768
-	mikoTileSize      = 128
-	mikoScaleFactor   = 0.5
-	mikoMapWidth      = 16
-	mikoMapHeight     = 12
-	playerSpeed       = 2.0
-	worshipperSpeed   = 1.0
-	spawnInterval     = 300 // frames between spawns (5 seconds at 60fps)
-	offeringDuration  = 120 // frames to stay at donation box (2 seconds)
+	mikoScreenWidth  = 1024
+	mikoScreenHeight = 768
+	mikoTileSize     = 128
+	mikoScaleFactor  = 0.5
+	mikoMapWidth     = 16
+	mikoMapHeight    = 12
+	playerSpeed      = 2.0
+	worshipperSpeed  = 1.0
+	spawnInterval    = 300 // frames between spawns (5 seconds at 60fps)
+	offeringDuration = 120 // frames to stay at donation box (2 seconds)
 )
 
 // TileID represents a tile by its x,y position in the tileset
@@ -38,11 +39,171 @@ func (t TileID) ToIndex() int {
 	return t.Y*8 + t.X
 }
 
+// Point represents a tile coordinate
+type Point struct {
+	X, Y int
+}
+
+// Node represents a node in the A* pathfinding algorithm
+type Node struct {
+	Point  Point
+	Parent *Node
+	G      float64 // Cost from start to this node
+	H      float64 // Heuristic cost from this node to goal
+	F      float64 // Total cost (G + H)
+}
+
+// NodeList implements a priority queue for A* algorithm
+type NodeList []*Node
+
+func (nl NodeList) Len() int           { return len(nl) }
+func (nl NodeList) Less(i, j int) bool { return nl[i].F < nl[j].F }
+func (nl NodeList) Swap(i, j int)      { nl[i], nl[j] = nl[j], nl[i] }
+
+func (nl *NodeList) Push(x interface{}) {
+	*nl = append(*nl, x.(*Node))
+}
+
+func (nl *NodeList) Pop() interface{} {
+	old := *nl
+	n := len(old)
+	item := old[n-1]
+	*nl = old[0 : n-1]
+	return item
+}
+
 type Player struct {
 	X, Y   float64
 	Width  float64
 	Height float64
 	Image  *ebiten.Image
+}
+
+// isWalkable checks if a tile at the given coordinates is walkable
+func isWalkable(shrineMap [][]TileID, x, y int) bool {
+	if x < 0 || x >= mikoMapWidth || y < 0 || y >= mikoMapHeight {
+		return false
+	}
+
+	tile := shrineMap[y][x]
+
+	// Define walkable tiles
+	walkableTiles := []TileID{
+		{0, 1}, // Stone path (vertical)
+		{0, 5}, // Grass
+		{2, 1}, // Gravel/sand
+		{0, 3}, // Stone stairs (top)
+		{0, 6}, // Stone stairs (middle)
+		{1, 6}, // Stone stairs (bottom)
+		{4, 2}, // Shrine floor (left)
+		{5, 2}, // Shrine floor (center)
+	}
+
+	for _, walkableTile := range walkableTiles {
+		if tile.X == walkableTile.X && tile.Y == walkableTile.Y {
+			return true
+		}
+	}
+
+	return false
+}
+
+// manhattanDistance calculates the Manhattan distance between two points
+func manhattanDistance(a, b Point) float64 {
+	return math.Abs(float64(a.X-b.X)) + math.Abs(float64(a.Y-b.Y))
+}
+
+// findPath uses A* algorithm to find a path from start to goal
+func findPath(shrineMap [][]TileID, start, goal Point) []Point {
+	// Initialize open and closed lists
+	openList := &NodeList{}
+	closedList := make(map[Point]*Node)
+
+	startNode := &Node{
+		Point:  start,
+		Parent: nil,
+		G:      0,
+		H:      manhattanDistance(start, goal),
+		F:      manhattanDistance(start, goal),
+	}
+
+	*openList = append(*openList, startNode)
+
+	directions := []Point{{0, 1}, {1, 0}, {0, -1}, {-1, 0}} // Down, Right, Up, Left
+
+	for len(*openList) > 0 {
+		// Sort open list by F value
+		sort.Sort(openList)
+
+		current := (*openList)[0]
+		*openList = (*openList)[1:]
+
+		// Add current node to closed list
+		closedList[current.Point] = current
+
+		// Check if we've reached the goal
+		if current.Point.X == goal.X && current.Point.Y == goal.Y {
+			// Reconstruct path
+			path := []Point{}
+			for node := current; node != nil; node = node.Parent {
+				path = append([]Point{node.Point}, path...)
+			}
+			return path
+		}
+
+		// Check all neighbors
+		for _, dir := range directions {
+			neighborPoint := Point{
+				X: current.Point.X + dir.X,
+				Y: current.Point.Y + dir.Y,
+			}
+
+			// Skip if neighbor is not walkable
+			if !isWalkable(shrineMap, neighborPoint.X, neighborPoint.Y) {
+				continue
+			}
+
+			// Skip if neighbor is in closed list
+			if _, exists := closedList[neighborPoint]; exists {
+				continue
+			}
+
+			// Calculate costs
+			g := current.G + 1.0
+			h := manhattanDistance(neighborPoint, goal)
+			f := g + h
+
+			// Check if neighbor is already in open list
+			neighborInOpen := false
+			for _, node := range *openList {
+				if node.Point.X == neighborPoint.X && node.Point.Y == neighborPoint.Y {
+					if g < node.G {
+						// Update existing node with better path
+						node.G = g
+						node.F = f
+						node.Parent = current
+					}
+					neighborInOpen = true
+					break
+				}
+			}
+
+			// Add neighbor to open list if not already there
+			if !neighborInOpen {
+				neighborNode := &Node{
+					Point:  neighborPoint,
+					Parent: current,
+					G:      g,
+					H:      h,
+					F:      f,
+				}
+				*openList = append(*openList, neighborNode)
+			}
+		}
+	}
+
+	// No path found
+	return []Point{}
 }
 
 // WorshipperState represents the current state of a worshipper
@@ -65,27 +226,73 @@ type Worshipper struct {
 	TargetX       float64 // Target position for leaving
 	Speed         float64
 	Color         color.RGBA // Tint color for variety
+	Path          []Point    // Path to follow
+	PathIndex     int        // Current position in path
+	NextTarget    Point      // Next tile to move to
+}
+
+// pixelToTile converts pixel coordinates to tile coordinates
+func pixelToTile(x, y float64) Point {
+	return Point{
+		X: int(x / (mikoTileSize * mikoScaleFactor)),
+		Y: int(y / (mikoTileSize * mikoScaleFactor)),
+	}
+}
+
+// tileToPixel converts tile coordinates to pixel coordinates (center of tile)
+func tileToPixel(p Point) (float64, float64) {
+	return float64(p.X)*mikoTileSize*mikoScaleFactor + (mikoTileSize*mikoScaleFactor)/2,
+		float64(p.Y)*mikoTileSize*mikoScaleFactor + (mikoTileSize*mikoScaleFactor)/2
+}
+
+// findNearestWalkableTile finds the nearest walkable tile to the given position
+func findNearestWalkableTile(shrineMap [][]TileID, x, y float64) Point {
+	tilePos := pixelToTile(x, y)
+
+	// If current position is walkable, return it
+	if isWalkable(shrineMap, tilePos.X, tilePos.Y) {
+		return tilePos
+	}
+
+	// Search in expanding circles
+	for radius := 1; radius <= 5; radius++ {
+		for dx := -radius; dx <= radius; dx++ {
+			for dy := -radius; dy <= radius; dy++ {
+				if dx == 0 && dy == 0 {
+					continue
+				}
+				checkX := tilePos.X + dx
+				checkY := tilePos.Y + dy
+				if isWalkable(shrineMap, checkX, checkY) {
+					return Point{checkX, checkY}
+				}
+			}
+		}
+	}
+
+	// Fallback to bottom center if no walkable tile found
+	return Point{mikoMapWidth / 2, mikoMapHeight - 1}
 }
 
 // NewWorshipper creates a new worshipper at a random spawn position
-func NewWorshipper(image *ebiten.Image) *Worshipper {
+func NewWorshipper(image *ebiten.Image, shrineMap [][]TileID) *Worshipper {
 	// Spawn from random side of screen
 	var startX, startY float64
 	var targetX float64
-	
+
 	side := rand.Intn(2) // 0 = left, 1 = right
 	if side == 0 {
 		// Spawn from left
 		startX = -50
-		targetX = float64(mikoMapWidth) * mikoTileSize * mikoScaleFactor + 50
+		targetX = float64(mikoMapWidth)*mikoTileSize*mikoScaleFactor + 50
 	} else {
 		// Spawn from right
-		startX = float64(mikoMapWidth) * mikoTileSize * mikoScaleFactor + 50
+		startX = float64(mikoMapWidth)*mikoTileSize*mikoScaleFactor + 50
 		targetX = -50
 	}
-	
+
 	startY = float64(mikoMapHeight-1) * mikoTileSize * mikoScaleFactor // Bottom of screen
-	
+
 	// Random color tint for variety
 	colors := []color.RGBA{
 		{255, 255, 255, 255}, // White (no tint)
@@ -94,70 +301,148 @@ func NewWorshipper(image *ebiten.Image) *Worshipper {
 		{200, 200, 255, 255}, // Light blue
 		{255, 255, 200, 255}, // Light yellow
 	}
-	
-	return &Worshipper{
-		X:       startX,
-		Y:       startY,
-		Width:   32,
-		Height:  32,
-		Image:   image,
-		State:   StateApproaching,
-		Timer:   0,
-		StartX:  startX,
-		TargetX: targetX,
-		Speed:   worshipperSpeed + rand.Float64()*0.5, // Random speed variation
-		Color:   colors[rand.Intn(len(colors))],
+
+	worshipper := &Worshipper{
+		X:         startX,
+		Y:         startY,
+		Width:     32,
+		Height:    32,
+		Image:     image,
+		State:     StateApproaching,
+		Timer:     0,
+		StartX:    startX,
+		TargetX:   targetX,
+		Speed:     worshipperSpeed + rand.Float64()*0.5, // Random speed variation
+		Color:     colors[rand.Intn(len(colors))],
+		Path:      []Point{},
+		PathIndex: 0,
 	}
+
+	// Find nearest walkable tile to starting position
+	startTile := findNearestWalkableTile(shrineMap, startX, startY)
+
+	// Donation box is at tile (8, 4)
+	donationBoxTile := Point{8, 4}
+
+	// Calculate path to donation box
+	path := findPath(shrineMap, startTile, donationBoxTile)
+	if len(path) > 0 {
+		worshipper.Path = path
+		worshipper.PathIndex = 0
+		worshipper.NextTarget = path[0]
+	}
+
+	return worshipper
 }
 
 // Update updates the worshipper's state and position
-func (w *Worshipper) Update() {
+func (w *Worshipper) Update(shrineMap [][]TileID) {
 	switch w.State {
 	case StateApproaching:
-		// Move towards donation box
-		donationBoxX := float64(8) * mikoTileSize * mikoScaleFactor
-		donationBoxY := float64(4) * mikoTileSize * mikoScaleFactor
-		
-		// Calculate direction to donation box
-		dx := donationBoxX - w.X
-		dy := donationBoxY - w.Y
-		
-		// Calculate distance
-		distance := math.Sqrt(dx*dx + dy*dy)
-		
-		// If close enough to donation box, start offering
-		if distance < 20 {
-			w.State = StateOffering
-			w.Timer = 0
-			return
+		// Follow the path to the donation box
+		if len(w.Path) > 0 && w.PathIndex < len(w.Path) {
+			targetX, targetY := tileToPixel(w.NextTarget)
+
+			// Calculate direction to next path point
+			dx := targetX - w.X
+			dy := targetY - w.Y
+			distance := math.Sqrt(dx*dx + dy*dy)
+
+			// If close enough to current target, move to next path point
+			if distance < 10 {
+				w.PathIndex++
+				if w.PathIndex < len(w.Path) {
+					w.NextTarget = w.Path[w.PathIndex]
+				} else {
+					// Reached destination
+					w.State = StateOffering
+					w.Timer = 0
+					return
+				}
+			} else {
+				// Move towards current target
+				if distance > 0 {
+					w.X += (dx / distance) * w.Speed
+					w.Y += (dy / distance) * w.Speed
+				}
+			}
+		} else {
+			// Fallback to direct movement if no path
+			donationBoxX := float64(8) * mikoTileSize * mikoScaleFactor
+			donationBoxY := float64(4) * mikoTileSize * mikoScaleFactor
+
+			dx := donationBoxX - w.X
+			dy := donationBoxY - w.Y
+			distance := math.Sqrt(dx*dx + dy*dy)
+
+			if distance < 20 {
+				w.State = StateOffering
+				w.Timer = 0
+				return
+			}
+
+			if distance > 0 {
+				w.X += (dx / distance) * w.Speed
+				w.Y += (dy / distance) * w.Speed
+			}
 		}
-		
-		// Move towards donation box
-		if distance > 0 {
-			w.X += (dx / distance) * w.Speed
-			w.Y += (dy / distance) * w.Speed
-		}
-		
+
 	case StateOffering:
 		// Stay at donation box for a while
 		w.Timer++
 		if w.Timer >= offeringDuration {
 			w.State = StateLeaving
 			w.Timer = 0
+
+			// Calculate path to exit
+			currentTile := pixelToTile(w.X, w.Y)
+			exitTile := findNearestWalkableTile(shrineMap, w.TargetX, float64(mikoMapHeight-1)*mikoTileSize*mikoScaleFactor)
+
+			exitPath := findPath(shrineMap, currentTile, exitTile)
+			if len(exitPath) > 0 {
+				w.Path = exitPath
+				w.PathIndex = 0
+				w.NextTarget = exitPath[0]
+			}
 		}
-		
+
 	case StateLeaving:
-		// Move towards target exit position
-		dx := w.TargetX - w.X
-		dy := (float64(mikoMapHeight) * mikoTileSize * mikoScaleFactor) - w.Y
-		
-		// Calculate distance
-		distance := math.Sqrt(dx*dx + dy*dy)
-		
-		// Move towards exit
-		if distance > 0 {
-			w.X += (dx / distance) * w.Speed
-			w.Y += (dy / distance) * w.Speed
+		// Follow the path to the exit
+		if len(w.Path) > 0 && w.PathIndex < len(w.Path) {
+			targetX, targetY := tileToPixel(w.NextTarget)
+
+			// Calculate direction to next path point
+			dx := targetX - w.X
+			dy := targetY - w.Y
+			distance := math.Sqrt(dx*dx + dy*dy)
+
+			// If close enough to current target, move to next path point
+			if distance < 10 {
+				w.PathIndex++
+				if w.PathIndex < len(w.Path) {
+					w.NextTarget = w.Path[w.PathIndex]
+				} else {
+					// Reached exit path, now move off-screen
+					w.Path = []Point{}
+				}
+			} else {
+				// Move towards current target
+				if distance > 0 {
+					w.X += (dx / distance) * w.Speed
+					w.Y += (dy / distance) * w.Speed
+				}
+			}
+		} else {
+			// Move off-screen after following path
+			dx := w.TargetX - w.X
+			dy := (float64(mikoMapHeight) * mikoTileSize * mikoScaleFactor) - w.Y
+
+			distance := math.Sqrt(dx*dx + dy*dy)
+
+			if distance > 0 {
+				w.X += (dx / distance) * w.Speed
+				w.Y += (dy / distance) * w.Speed
+			}
 		}
 	}
 }
@@ -168,25 +453,25 @@ func (w *Worshipper) IsOffScreen() bool {
 }
 
 type MikoGameWithWorshippers struct {
-	tilemapImage   *ebiten.Image
-	tileDesc       map[string]string
-	shrineMap      [][]TileID
-	player         *Player
-	cameraX        float64
-	cameraY        float64
-	editMode       bool
-	selectedTile   TileID
-	worshippers    []*Worshipper
-	spawnTimer     int
+	tilemapImage    *ebiten.Image
+	tileDesc        map[string]string
+	shrineMap       [][]TileID
+	player          *Player
+	cameraX         float64
+	cameraY         float64
+	editMode        bool
+	selectedTile    TileID
+	worshippers     []*Worshipper
+	spawnTimer      int
 	worshipperImage *ebiten.Image
-	donationCount  int
-	totalDonations int
+	donationCount   int
+	totalDonations  int
 }
 
 func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
 	// Initialize random seed
 	rand.Seed(time.Now().UnixNano())
-	
+
 	// Load the tilemap image
 	tilemapImg, _, err := ebitenutil.NewImageFromFile("assets/tilemap/japanese_town_tileset.png")
 	if err != nil {
@@ -261,8 +546,8 @@ func createMikoShrineMap() [][]TileID {
 	shrineMap[10][8] = TileID{1, 2} // 鳥居（右半分）
 
 	// Stone lanterns along the path
-	shrineMap[8][6] = TileID{2, 2} // 石灯籠（上部）
-	shrineMap[9][6] = TileID{3, 2} // 石灯籠（下部）
+	shrineMap[8][6] = TileID{2, 2}  // 石灯籠（上部）
+	shrineMap[9][6] = TileID{3, 2}  // 石灯籠（下部）
 	shrineMap[8][10] = TileID{2, 2} // 石灯籠（上部）
 	shrineMap[9][10] = TileID{3, 2} // 石灯籠（下部）
 
@@ -273,22 +558,22 @@ func createMikoShrineMap() [][]TileID {
 
 	// Create shrine building
 	// Roof
-	shrineMap[1][6] = TileID{4, 0}  // 拝殿屋根（上端・左）
-	shrineMap[1][7] = TileID{5, 0}  // 拝殿屋根（上端・中左）
-	shrineMap[1][8] = TileID{6, 0}  // 拝殿屋根（上端・中右）
-	shrineMap[1][9] = TileID{7, 0}  // 拝殿屋根（上端・右）
+	shrineMap[1][6] = TileID{4, 0} // 拝殿屋根（上端・左）
+	shrineMap[1][7] = TileID{5, 0} // 拝殿屋根（上端・中左）
+	shrineMap[1][8] = TileID{6, 0} // 拝殿屋根（上端・中右）
+	shrineMap[1][9] = TileID{7, 0} // 拝殿屋根（上端・右）
 
 	// Shrine walls
-	shrineMap[2][6] = TileID{5, 1}  // 拝殿壁（格子・左）
-	shrineMap[2][7] = TileID{6, 1}  // 拝殿壁（格子・中央）
-	shrineMap[2][8] = TileID{4, 1}  // 拝殿入口（正面）
-	shrineMap[2][9] = TileID{7, 1}  // 拝殿壁（格子・右）
+	shrineMap[2][6] = TileID{5, 1} // 拝殿壁（格子・左）
+	shrineMap[2][7] = TileID{6, 1} // 拝殿壁（格子・中央）
+	shrineMap[2][8] = TileID{4, 1} // 拝殿入口（正面）
+	shrineMap[2][9] = TileID{7, 1} // 拝殿壁（格子・右）
 
 	// Shrine floor
-	shrineMap[3][6] = TileID{4, 2}  // 拝殿縁側（左）
-	shrineMap[3][7] = TileID{5, 2}  // 拝殿縁側（中央）
-	shrineMap[3][8] = TileID{5, 2}  // 拝殿縁側（中央）
-	shrineMap[3][9] = TileID{5, 2}  // 拝殿縁側（中央）
+	shrineMap[3][6] = TileID{4, 2} // 拝殿縁側（左）
+	shrineMap[3][7] = TileID{5, 2} // 拝殿縁側（中央）
+	shrineMap[3][8] = TileID{5, 2} // 拝殿縁側（中央）
+	shrineMap[3][9] = TileID{5, 2} // 拝殿縁側（中央）
 
 	// Place donation box
 	shrineMap[4][8] = TileID{1, 4} // 賽銭箱
@@ -356,7 +641,7 @@ func (g *MikoGameWithWorshippers) Update() error {
 		// Keep player within map bounds
 		mapWidthPixels := float64(mikoMapWidth) * mikoTileSize * mikoScaleFactor
 		mapHeightPixels := float64(mikoMapHeight) * mikoTileSize * mikoScaleFactor
-		
+
 		if g.player.X < 0 {
 			g.player.X = 0
 		}
@@ -377,7 +662,7 @@ func (g *MikoGameWithWorshippers) Update() error {
 		// Keep camera within bounds
 		maxCameraX := mapWidthPixels - float64(mikoScreenWidth)
 		maxCameraY := mapHeightPixels - float64(mikoScreenHeight)
-		
+
 		if g.cameraX < 0 {
 			g.cameraX = 0
 		}
@@ -446,26 +731,26 @@ func (g *MikoGameWithWorshippers) Update() error {
 func (g *MikoGameWithWorshippers) updateWorshippers() {
 	// Increment spawn timer
 	g.spawnTimer++
-	
+
 	// Spawn new worshipper randomly
 	if g.spawnTimer >= spawnInterval && rand.Float64() < 0.3 { // 30% chance every spawn interval
-		g.worshippers = append(g.worshippers, NewWorshipper(g.worshipperImage))
+		g.worshippers = append(g.worshippers, NewWorshipper(g.worshipperImage, g.shrineMap))
 		g.spawnTimer = 0
 	}
-	
+
 	// Update existing worshippers
 	for i := 0; i < len(g.worshippers); i++ {
 		worshipper := g.worshippers[i]
 		oldState := worshipper.State
-		
-		worshipper.Update()
-		
+
+		worshipper.Update(g.shrineMap)
+
 		// Check if worshipper just started offering (for donation counting)
 		if oldState == StateApproaching && worshipper.State == StateOffering {
 			g.donationCount++
 			g.totalDonations++
 		}
-		
+
 		// Remove worshippers that are off screen
 		if worshipper.IsOffScreen() {
 			g.worshippers = append(g.worshippers[:i], g.worshippers[i+1:]...)
@@ -527,7 +812,7 @@ func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
 	info += fmt.Sprintf("参拝客数: %d\n", len(g.worshippers))
 	info += fmt.Sprintf("現在の賽銭: %d\n", g.donationCount)
 	info += fmt.Sprintf("総賽銭: %d\n", g.totalDonations)
-	
+
 	if g.editMode {
 		tileKey := fmt.Sprintf("%d,%d", g.selectedTile.X, g.selectedTile.Y)
 		tileDesc := g.tileDesc[tileKey]
@@ -537,7 +822,7 @@ func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
 		info += fmt.Sprintf("\nプレイヤー位置: (%.0f, %.0f)\n", g.player.X, g.player.Y)
 		info += "WASD/矢印キー: 移動\nE: 編集モード切替"
 	}
-	
+
 	ebitenutil.DebugPrint(screen, info)
 
 	// Draw selected tile preview in edit mode
@@ -546,20 +831,20 @@ func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
 		previewX := mikoScreenWidth - 100
 		previewY := 10
 		previewSize := 64.0
-		
+
 		// Background
-		ebitenutil.DrawRect(screen, float64(previewX-5), float64(previewY-5), 
+		ebitenutil.DrawRect(screen, float64(previewX-5), float64(previewY-5),
 			previewSize+10, previewSize+10, color.RGBA{0, 0, 0, 180})
-		
+
 		// Selected tile
 		op := &ebiten.DrawImageOptions{}
 		scale := previewSize / float64(mikoTileSize)
 		op.GeoM.Scale(scale, scale)
 		op.GeoM.Translate(float64(previewX), float64(previewY))
-		
+
 		srcX := g.selectedTile.X * mikoTileSize
 		srcY := g.selectedTile.Y * mikoTileSize
-		
+
 		screen.DrawImage(g.tilemapImage.SubImage(
 			image.Rect(srcX, srcY, srcX+mikoTileSize, srcY+mikoTileSize),
 		).(*ebiten.Image), op)
@@ -568,17 +853,17 @@ func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
 
 func (g *MikoGameWithWorshippers) drawWorshipper(screen *ebiten.Image, worshipper *Worshipper) {
 	op := &ebiten.DrawImageOptions{}
-	
+
 	// Scale worshipper
 	scale := 0.1 // Smaller than player
 	op.GeoM.Scale(scale, scale)
-	
+
 	// Position with camera offset
 	op.GeoM.Translate(worshipper.X-g.cameraX, worshipper.Y-g.cameraY)
-	
+
 	// Apply color tint
 	op.ColorScale.ScaleWithColor(worshipper.Color)
-	
+
 	// Add special effects for different states
 	switch worshipper.State {
 	case StateOffering:
@@ -593,7 +878,7 @@ func (g *MikoGameWithWorshippers) drawWorshipper(screen *ebiten.Image, worshippe
 		}
 		op.ColorScale.Scale(1, 1, 1, float32(alpha))
 	}
-	
+
 	screen.DrawImage(worshipper.Image, op)
 }
 
