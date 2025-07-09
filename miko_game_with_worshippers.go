@@ -2,11 +2,9 @@ package main
 
 import (
 	"container/heap"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
-	"io/ioutil"
 	"log"
 	"math"
 	"math/rand"
@@ -35,8 +33,6 @@ const (
 	maxSearchRadius               = 5
 	pathfindingProximityThreshold = 10.0
 
-	// Default tile description file path (optional)
-	defaultTileDescFile = "shrine_tileset_8x8_description.json"
 )
 
 // TileID represents a tile by its x,y position in the tileset
@@ -513,7 +509,6 @@ func (w *Worshipper) IsOffScreen() bool {
 
 type MikoGameWithWorshippers struct {
 	tilemapImage    *ebiten.Image
-	tileDesc        map[string]string
 	shrineMap       [][]TileID
 	player          *Player
 	cameraX         float64
@@ -534,38 +529,18 @@ func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
 	// Load the tilemap image
 	tilemapImg, _, err := ebitenutil.NewImageFromFile("assets/tilemap/japanese_town_tileset.png")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to load tilemap image: %v", err)
+		log.Fatal("Critical error: Cannot load tilemap image assets/tilemap/japanese_town_tileset.png")
 	}
 
 	// Load player image
 	playerImg, _, err := ebitenutil.NewImageFromFile("assets/characters/miko_girl.png")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to load player image: %v", err)
+		log.Fatal("Critical error: Cannot load player image assets/characters/miko_girl.png")
 	}
 
-	// Load tile descriptions (optional - tries multiple paths)
-	var tileDesc map[string]string
-	tileDescPaths := []string{
-		defaultTileDescFile,
-		"assets/tilemap/" + defaultTileDescFile,
-		"tilemap/" + defaultTileDescFile,
-	}
-
-	tileDesc = make(map[string]string)
-	for _, path := range tileDescPaths {
-		jsonData, err := ioutil.ReadFile(path)
-		if err == nil {
-			err = json.Unmarshal(jsonData, &tileDesc)
-			if err == nil {
-				log.Printf("Loaded tile descriptions from: %s", path)
-				break
-			}
-		}
-	}
-
-	if len(tileDesc) == 0 {
-		log.Printf("No tile descriptions loaded - using empty map")
-	}
+	// Note: Tile descriptions are not loaded to ensure WebGL compatibility
 
 	// Create player
 	player := &Player{
@@ -581,7 +556,6 @@ func NewMikoGameWithWorshippers() *MikoGameWithWorshippers {
 
 	return &MikoGameWithWorshippers{
 		tilemapImage:    tilemapImg,
-		tileDesc:        tileDesc,
 		shrineMap:       shrineMap,
 		player:          player,
 		cameraX:         0,
@@ -885,8 +859,7 @@ func (g *MikoGameWithWorshippers) Draw(screen *ebiten.Image) {
 
 	if g.editMode {
 		tileKey := fmt.Sprintf("%d,%d", g.selectedTile.X, g.selectedTile.Y)
-		tileDesc := g.tileDesc[tileKey]
-		info += fmt.Sprintf("\n[編集モード]\n選択タイル: %s\n%s\n", tileKey, tileDesc)
+		info += fmt.Sprintf("\n[編集モード]\n選択タイル: %s\n", tileKey)
 		info += "Q/R: タイルX選択, T/Y: タイルY選択\n左クリック: タイル配置\nSpace: カメラリセット"
 	} else {
 		info += fmt.Sprintf("\nプレイヤー位置: (%.0f, %.0f)\n", g.player.X, g.player.Y)
